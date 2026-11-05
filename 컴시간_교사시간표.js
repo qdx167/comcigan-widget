@@ -13,7 +13,7 @@ const HOST = 'http://comci.net:4082';
 const SC_PREFIX = '70909_';
 const DATA_PATH = '/662119_T';
 const ENDPOINT_FILE_NAME = 'endpoint.json';
-const SCRIPT_VERSION = '2026-11-06';
+const SCRIPT_VERSION = '2026-11-06'; // 같은 날 다시 내면 '2026-11-06.2', '.3' …
 const UPDATE_INFO_URL = 'https://raw.githubusercontent.com/qdx167/comcigan-widget/main/update/version.json';
 const UPDATE_CHECK_FILE_NAME = 'update-check.json';
 const UPDATE_CHECK_INTERVAL_HOURS = 24;
@@ -681,6 +681,16 @@ async function getWeekData(schoolCode, r) {
 // ===== 새 버전 알림 / 공지 (받은 내용은 글자로만 보여줌) =====
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const VERSION_RE = /^(\d{4}-\d{2}-\d{2})(?:\.(\d{1,3}))?$/;
+
+/** 'YYYY-MM-DD' 또는 'YYYY-MM-DD.N'. 날짜가 같으면 번호로 비교(번호 없으면 1). a가 크면 양수. */
+function compareVersions(a, b) {
+  const ma = VERSION_RE.exec(String(a));
+  const mb = VERSION_RE.exec(String(b));
+  if (!ma || !mb) return 0;
+  if (ma[1] !== mb[1]) return ma[1] > mb[1] ? 1 : -1;
+  return Number(ma[2] || 1) - Number(mb[2] || 1);
+}
 const REMOTE_JUNK_RE = new RegExp('[' +
   '\\u0000-\\u001f\\u007f-\\u009f\\u200b-\\u200f\\u2028-\\u202e\\u2066-\\u2069\\ufeff' + ']+', 'g');
 
@@ -703,7 +713,7 @@ function cleanRemoteDate(v) {
 /** version.json 내용 검사. 하나라도 형식이 맞지 않으면 null. */
 function parseUpdateInfo(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const latestVersion = typeof raw.latestVersion === 'string' && DATE_RE.test(raw.latestVersion) ? raw.latestVersion : null;
+  const latestVersion = typeof raw.latestVersion === 'string' && VERSION_RE.test(raw.latestVersion) ? raw.latestVersion : null;
   const notes = cleanRemoteText(raw.notes);
   const notice = cleanRemoteText(raw.notice);
   const noticeUntil = cleanRemoteDate(raw.noticeUntil);
@@ -770,7 +780,7 @@ function localDateStr(ms) {
 
 function updateStatus(check) {
   const info = check ? check.info : null;
-  const hasNew = !!info && info.latestVersion > SCRIPT_VERSION;
+  const hasNew = !!info && compareVersions(info.latestVersion, SCRIPT_VERSION) > 0;
   const showNotice = !!info && !!info.notice && (!info.noticeUntil || localDateStr(Date.now()) <= info.noticeUntil);
   let label = '아직 확인 안 함';
   if (check) label = hasNew ? `새 버전 있음 (${info.latestVersion})` : (check.ok ? '최신 버전' : '확인 실패');
