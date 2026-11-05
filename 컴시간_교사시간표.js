@@ -3,26 +3,9 @@
 // icon-color: blue; icon-glyph: chalkboard-teacher;
 
 /**
- * 컴시간 교사 시간표 위젯 — 홈 화면 위젯(중간 크기) + 탭하면 열리는 확대 화면
- *
- * 처음 설정
- *  1) 이 스크립트를 실행하면 설정 화면이 열립니다. 학교 코드를 넣고 선생님을 고른 뒤
- *     교시 시각을 확인하고 저장합니다. (학교 코드는 컴시간알리미 앱이나
- *     컴시간교사.kr에서 학교를 검색하면 나옵니다.)
- *  2) 홈 화면에 Scriptable 위젯을 "중간 크기"로 추가하고 이 스크립트를 선택합니다.
- *
- * 사용
- *  - 위젯을 탭하면 주간/반별 시간표가 열립니다. 학교·선생님·교시 설정과 테마 색은
- *    확대 화면 맨 아래 ⚙ 설정에서 바꿉니다.
- *  - 설정은 iCloud의 Scriptable 폴더에 "컴시간_설정.json"으로 저장되어, 같은 iCloud를 쓰는
- *    아이폰·아이패드가 함께 씁니다. 새 버전 스크립트로 덮어써도 설정은 그대로입니다.
- *  - "오류 ›" 표시가 뜨면 확대 화면에서 눌러 원인과 해결 방법을 볼 수 있습니다.
- *    "⚠ 오프라인"은 인터넷 연결 문제라 기다리면 됩니다.
- *  - (선택) 위젯 편집의 Parameter에 교사 번호를 적으면 그 선생님 시간표를 보여줍니다.
- *  - (선택) 단축어의 "스크립트 실행" 입력을 텍스트 silent-refresh로 주면 화면 없이 자료만 갱신합니다.
- *
- * 참고: 컴시간은 공식 API가 없어 사이트가 크게 바뀌면 동작이 멈출 수 있고, 사이트가
- * http라 통신 내용이 암호화되지 않습니다.
+ * 컴시간 교사 시간표 위젯 (Scriptable, 중간 크기 위젯)
+ * 처음 실행하면 설정 화면이 열립니다. 설치·사용 방법: https://github.com/qdx167/comcigan-widget
+ * 컴시간은 공식 API가 없어 사이트가 크게 바뀌면 멈출 수 있고, http라 통신이 암호화되지 않습니다.
  */
 
 // ===== 내부 상수 =====
@@ -31,7 +14,7 @@ const SC_PREFIX = '70909_';
 const DATA_PATH = '/662119_T';
 const ENDPOINT_FILE_NAME = 'endpoint.json';
 const SCRIPT_VERSION = '2026-11-05';
-const UPDATE_INFO_URL = 'https://raw.githubusercontent.com/qdx167/comcigan-widget/main/version.json';
+const UPDATE_INFO_URL = 'https://raw.githubusercontent.com/qdx167/comcigan-widget/main/update/version.json';
 const UPDATE_CHECK_FILE_NAME = 'update-check.json';
 const UPDATE_CHECK_INTERVAL_HOURS = 24;
 const UPDATE_RETRY_HOURS = 3;
@@ -299,8 +282,8 @@ function sanitizeSettings(raw) {
 
 /** 저장 전에 확인할 것. 문제가 있으면 사람이 읽을 문장을, 없으면 null. */
 function settingsProblem(s, school) {
-  if (!s.schoolCode) return '학교 코드를 입력해주세요.';
-  if (!school || school.code !== s.schoolCode) return '학교 코드 옆의 "확인"을 눌러 학교를 먼저 확인해주세요.';
+  if (!s.schoolCode) return '학교를 찾아 골라주세요.';
+  if (!school || school.code !== s.schoolCode) return '맨 위 "우리 학교 찾기"에서 학교를 먼저 골라주세요.';
   if (!school.teachers.some((t) => t[0] === s.teacherId)) return '선생님을 골라주세요.';
   let prevEnd = -1;
   for (let i = 0; i < s.maxPeriod; i++) {
@@ -440,7 +423,7 @@ function saveEndpoint(ep) {
   } catch (e) {}
 }
 
-function extractEndpointFromPage(page) {
+function decodePageScripts(page) {
   let text = page;
   const blockRe = /\(function\(a,k\)\{[\s\S]*?\}\)\((\[\[[\s\S]*?\]\]),\s*(\d+)\)/g;
   let m;
@@ -460,6 +443,11 @@ function extractEndpointFromPage(page) {
       text += '\n' + s;
     } catch (e) {}
   }
+  return text;
+}
+
+function extractEndpointFromPage(page) {
+  const text = decodePageScripts(page);
   const p = text.match(/sc_data\(\s*'(\d{1,10}_)'/);
   const d = text.match(/'\.\/(\d{1,10}_T)\?'/);
   if (!p || !d) return null;
@@ -468,7 +456,12 @@ function extractEndpointFromPage(page) {
 }
 
 async function discoverEndpoint() {
-  const req = new Request(`${HOST}/th`);
+  const page = await fetchPageText('/th');
+  return page ? extractEndpointFromPage(page) : null;
+}
+
+async function fetchPageText(pathname) {
+  const req = new Request(`${HOST}${pathname}`);
   req.headers = { 'User-Agent': USER_AGENT };
   req.timeoutInterval = REQUEST_TIMEOUT_SEC;
   let bytes;
@@ -484,7 +477,7 @@ async function discoverEndpoint() {
   for (let i = 0; i < bytes.length; i += 8192) {
     page += String.fromCharCode.apply(null, bytes.slice(i, i + 8192));
   }
-  return extractEndpointFromPage(page);
+  return page;
 }
 
 function appError(code, message, detail) {
@@ -652,8 +645,7 @@ async function getWeekData(schoolCode, r) {
   }
 }
 
-// ===== 새 버전 알림 / 공지 =====
-// GitHub의 version.json을 하루에 한 번 읽어 글자로만 보여준다. 받은 내용은 실행하거나 HTML로 해석하지 않는다.
+// ===== 새 버전 알림 / 공지 (받은 내용은 글자로만 보여줌) =====
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const REMOTE_JUNK_RE = new RegExp('[' +
@@ -719,7 +711,7 @@ async function fetchUpdateInfo() {
   return info;
 }
 
-/** 확대 화면을 열 때 부름. 마지막 확인 뒤 정해진 시간이 지났을 때만 요청하고, 실패해도 예외를 던지지 않는다. */
+/** 확대 화면을 열 때만, 정해진 간격이 지났을 때만 확인. 실패해도 예외를 던지지 않음. */
 async function refreshUpdateCheck() {
   const prev = loadUpdateCheck();
   const now = Date.now();
@@ -791,6 +783,123 @@ const UPDATE_CSS = `
   .settings-group.version-info{ font-size:11px; line-height:1.7; color:var(--sub); text-align:center; margin:22px 0 0; }
 `;
 
+
+// ===== 학교 이름 검색 (설정 화면 전용) =====
+
+const SEARCH_QUERY_MAX = 20;
+const SEARCH_MAX_RESULTS = 30;
+// EUC-KR 한글 2350자가 '가'~'힣' 중 어느 글자인지 나타낸 비트표 (검색어 인코딩용)
+const KSX_HANGUL_BITMAP = 'kwf/PhGwAxMBKBARAACTBXseEbADlwE7EhGgAJOVazBRsAIRATIwEbACEQEKMHm4BhMBMBAAgAATAQsQEQAAkwMrEAAAAJMFa3RRsCMTATswEAAAAAAAcBGwAxMAKRARgCEBAAAwFbAOAwEwMAAAAhEBIxAAAAATgWsQEAADEwETEBEwAAEAADBVuCIAAAAwEbAClwf7OhGwAxMBIQAAAAAbDTs4EbADEwEzEQEAABMFKxwRAAEAAAAQEbAAEwEqMBmwAgEAEBAAAAARAQMwEDACEwdrFBEAABMFK3T5uI8TATsQAAAAAAAAcNmwShMBOxARAAMRAAAwWbEqEQEAEAAAAREBCxAAAAATASsQAAABAQAgEBGgAhEBITBZsAIBAAAwGbAHEwE7OBGwAwAAAAAAAAATDTs4EbADAQAQAAAAABMBIBAQAAABAAAQAQAAAAAAMBEYAgAAABAAAAARASMAAAAAkwELEBEwABEBKzARsMcTATswAYACAAAAMBGwgxMBKzARsAMRAAowEbACEQAgAAAAAREBKxARoAITASsQAAABAQAAMBGQAhMBKzARsGYAAAAwEbAC0wdrOhGwBwMBIAAAAAATBWs4EbADEwG4EAAAABsFKxABAAMAAAAQEaACEQEKcHmwohEBChAAAAARAQAQEZAAEQEJAAAAAJMFu/L5sCITATsyASAAAAAAMFmwBpMBOzARoCMRAABwEbACEQAQEAAAARMBAxABAACTBysWEAABAQAAMBEAAhEBKTARsAAAAAAwUbAOEwU7OBGwAwMAAQAAAACTATkQAAACAwA7AAAAABMBIwAAAAAAAAAQAAAAAQAgMBGQAgAAAAAAAAAAAAAQAAACEQEDAAAAABMBK7B5sCMTATswEbACEQEh8NmwQxMBOzARsAMRASBwUbAiEwEgEBGQAREBCzARsAKTAasWAAABEwEhMBGwAgMBKTAxsAIAAAAwGbhCGwEzOBEwAwAAIAAAAAATBTMQEQAAAAAAAAEAAJMFIzABAAEBABAQETAAAQAAMBEwAgEAEBAAAAARAAAAAAACE4UDEBEQABMBKzB3uGMTATswkbCiEQECMHvwVxMBK3DR8OMRARswcbkKEwE7MAGQAhMBKzARsAITByswETADEwEjMBGwAhMBqzARtP4RAQkwcbhH0wV7MBGwA1MBIRARAAATBWswEbACEQEzEAAAABMF6zgQoAIBADAQEbACEwAgMHGwAgEAEBAAAAATAQsQERAAEwErAAAAAJMFazaVsAMTATsQAQACAAAAMBGwAwEAIBAAAAEAAAAwEbAKAwEQEAAAAREBAwAAAAITASMQAAADAAAAEAAAAAEAABAAkAIAAAAwETCGUwF7MBGwA1EBIQAAAAATATswEbACEQAQEAEAAhMBKxARAAIAAAAQEbACAQABMBGwAgEAEBABAAARASsQERACEwErAAAAAJMDKzARsAITATswAAACAAAAMBmwAxMBKxARsAMBAAAwEbACEwEhEAAAAgEBABAAAAATASsQEQACAQAgMBGwAhEBATARMAIAAAAwEbACEwM7MBGwAwEAIAAAAAATBTswEbACEQAQEAEAABMBKxQBAAABAAAQAYACAQAAMBGwAgEAEBAAAAATASMQERACkwULEBEwABMBK3BRsCMTATswAAAAAAAAMBGwAxMBKxARMAMBAQowEbACAQAgAAAAABEAABARoACTBSsQAAACAAAAEBGQABEBKRARsAAAAAAwEbACEyErMBGwAwEAIAAAAAATBSswEbACEwE7EBEgABMhKzIRgAITACgwEaACEQEKMBGSAhEBITARAAITASswEZAC0wMrEhEwAhMBKwA=';
+let ksxTableCache = null;
+
+function base64ToBytes(b64) {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const out = [];
+  let buf = 0, nbits = 0;
+  for (const ch of b64) {
+    const v = chars.indexOf(ch);
+    if (v < 0) continue;
+    buf = (buf << 6) | v;
+    nbits += 6;
+    if (nbits >= 8) { nbits -= 8; out.push((buf >> nbits) & 255); }
+  }
+  return out;
+}
+
+function popcount8(b) {
+  let n = 0;
+  for (; b; b &= b - 1) n++;
+  return n;
+}
+
+function ksxTable() {
+  if (ksxTableCache) return ksxTableCache;
+  const bytes = base64ToBytes(KSX_HANGUL_BITMAP);
+  const rank = [];
+  let n = 0;
+  for (const b of bytes) { rank.push(n); n += popcount8(b); }
+  ksxTableCache = { bytes, rank };
+  return ksxTableCache;
+}
+
+function hex2(n) {
+  return '%' + n.toString(16).toUpperCase().padStart(2, '0');
+}
+
+/** 검색어를 EUC-KR 퍼센트 인코딩으로. 바꿀 수 없는 글자가 있으면 null. */
+function encodeEucKrQuery(str) {
+  const t = ksxTable();
+  let out = '';
+  for (const ch of str) {
+    const c = ch.codePointAt(0);
+    if (/^[A-Za-z0-9]$/.test(ch)) { out += ch; continue; }
+    if (ch === ' ') { out += '%20'; continue; }
+    const i = c - 0xAC00;
+    if (i < 0 || i >= 11172) return null;
+    const byte = t.bytes[i >> 3];
+    const bit = i & 7;
+    if (!((byte >> bit) & 1)) return null;
+    const idx = t.rank[i >> 3] + popcount8(byte & ((1 << bit) - 1));
+    out += hex2(0xB0 + Math.floor(idx / 94)) + hex2(0xA1 + (idx % 94));
+  }
+  return out;
+}
+
+function extractSearchEndpointFromPage(page) {
+  const m = decodePageScripts(page).match(/'\.\/(\d{1,10})\?(\d{1,10}l)'/);
+  return m ? { path: '/' + m[1], key: m[2] } : null;
+}
+
+function cleanSchoolText(v, max) {
+  if (typeof v !== 'string') return '';
+  return v.replace(REMOTE_JUNK_RE, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
+}
+
+async function searchSchools(query) {
+  const q = String(query || '').replace(/\s+/g, ' ').trim();
+  if (!q) throw appError('search-input', '학교 이름을 넣어주세요.');
+  if (q.length > SEARCH_QUERY_MAX) throw appError('search-input', `${SEARCH_QUERY_MAX}자 안으로 넣어주세요.`);
+  const enc = encodeEucKrQuery(q);
+  if (enc === null) throw appError('search-input', '한글·영문·숫자로만 검색할 수 있어요.');
+
+  const page = await fetchPageText('/st');
+  const ep = page ? extractSearchEndpointFromPage(page) : null;
+  if (!ep) throw appError('site-changed', '학교 검색 주소를 찾지 못했습니다.');
+
+  const req = new Request(`${HOST}${ep.path}?${ep.key}${enc}`);
+  req.headers = { 'User-Agent': USER_AGENT, 'Referer': `${HOST}/st` };
+  req.timeoutInterval = REQUEST_TIMEOUT_SEC;
+  let body;
+  try {
+    body = await req.loadString();
+  } catch (e) {
+    throw appError('server', '학교 검색 결과를 받지 못했습니다.', errText(e));
+  }
+  const status = httpStatus(req);
+  if (status >= 400) throw appError('server', '학교 검색 결과를 받지 못했습니다.', `HTTP ${status}`);
+  if (typeof body !== 'string' || body.length > 200000 || body.lastIndexOf('}') < 0) {
+    throw appError('site-changed', '학교 검색 응답이 예상과 다릅니다.');
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(body.substring(0, body.lastIndexOf('}') + 1));
+  } catch (e) {
+    throw appError('site-changed', '학교 검색 응답을 해석하지 못했습니다.');
+  }
+  const list = parsed && parsed['학교검색'];
+  if (!Array.isArray(list)) throw appError('site-changed', '학교 검색 응답이 예상과 다릅니다.');
+  const schools = [];
+  for (const row of list) {
+    if (!Array.isArray(row)) continue;
+    const code = Number(row[3]);
+    const name = cleanSchoolText(row[2], 40);
+    if (!Number.isInteger(code) || code < 1 || code > 99999999 || !name) continue;
+    schools.push({ code: String(code), name, region: cleanSchoolText(row[1], 10) });
+    if (schools.length >= SEARCH_MAX_RESULTS) break;
+  }
+  return schools;
+}
+
 // ===== 오류 안내 =====
 
 const ERROR_INFO = {
@@ -798,7 +907,10 @@ const ERROR_INFO = {
     title: '인터넷에 연결되지 않았어요',
     summary: '인터넷 연결이 없거나 컴시간 사이트에 접속할 수 없습니다.',
     fix: 'wait',
-    steps: ['인터넷 연결을 확인한 뒤 ↻ 버튼으로 다시 시도해주세요.'],
+    steps: [
+      '와이파이나 셀룰러 데이터가 켜져 있는지 확인한 뒤 ↻ 버튼으로 다시 시도해주세요.',
+      '그동안은 마지막으로 받아둔 시간표가 보여요.',
+    ],
   },
   'server': {
     title: '컴시간 서버가 응답하지 않아요',
@@ -925,6 +1037,7 @@ const ERROR_CSS = `
     color:var(--err); background:none; border:1px solid var(--err); border-radius:5px;
     padding:0 6px; margin-right:6px; cursor:pointer; vertical-align:baseline;
   }
+  .err-badge.offline{ color:var(--warn); border-color:var(--warn); }
   .err-title{ font-size:18px; font-weight:700; color:var(--err); margin-bottom:8px; }
   .err-summary{ font-size:13px; line-height:1.5; margin-bottom:12px; }
   .err-fix{ display:inline-block; font-size:12px; font-weight:700; padding:4px 10px; border-radius:999px; margin-bottom:10px; }
@@ -1041,7 +1154,10 @@ function displayTeacherName(data, teacherId) {
 
 function displaySchoolName(data) {
   const override = String(CONFIG.SCHOOL_NAME_OVERRIDE || '').trim();
-  return override || String(data['학교명'] || '');
+  if (override) return override;
+  // 컴시간 자료의 학교명은 모든 학교가 "컴시간중"으로 가려져 오므로 지역만 씀
+  const region = String(data['지역명'] || '').trim();
+  return region ? `${region} 지역 학교` : '';
 }
 
 function getTeacherDay(data, teacherId, day, maxPeriod) {
@@ -1161,6 +1277,15 @@ function formatTime(ms) {
   const hh = String(d.getHours()).padStart(2, '0');
   const mm = String(d.getMinutes()).padStart(2, '0');
   return `${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}`;
+}
+
+/** 오늘이면 시각만, 아니면 날짜와 시각. */
+function formatFetchedShort(ms) {
+  if (!ms) return '-';
+  const d = new Date(ms);
+  const n = new Date();
+  const sameDay = d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate();
+  return sameDay ? `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` : formatTime(ms);
 }
 
 function formatServerUpdated(raw) {
@@ -1321,7 +1446,7 @@ function buildWidget(data, teacherId, prefs, meta) {
 
   const footer = w.addStack();
   footer.layoutHorizontally();
-  footer.bottomAlignContent();
+  footer.centerAlignContent();
   footer.size = new Size(getWidgetContentWidth(), 0);
   if (marker.text) {
     footer.addSpacer(10);
@@ -1337,13 +1462,17 @@ function buildWidget(data, teacherId, prefs, meta) {
   const showErr = isShownAsError(meta.report);
   const offline = meta.fromCache && !showErr;
   if (showErr) {
-    addErrorBadge(footer, 8.5);
+    addErrorBadge(footer, 9);
     footer.addSpacer(4);
   }
+  // 받아둔 시간표를 보여줄 때는 한 줄에 들어가도록 새로고침 시각을 빼고 시간표 수정 시각만 남김
+  const updated = `시간표 수정 ${formatServerUpdated(data['자료244'])}`;
   const footerText = footer.addText(
-    `${offline ? '⚠ 오프라인 · ' : ''}시간표 수정 ${formatServerUpdated(data['자료244'])} · 새로고침 ${formatTime(meta.fetchedAt)}`
+    meta.fromCache
+      ? `${offline ? '⚠ 오프라인 · ' : ''}${updated}`
+      : `${updated} · 새로고침 ${formatFetchedShort(meta.fetchedAt)}`
   );
-  footerText.font = Font.systemFont(9.5);
+  footerText.font = Font.systemFont(10.5);
   footerText.textColor = offline ? new Color(OFFLINE_HEX) : c.sub;
   footerText.lineLimit = 1;
   footerText.minimumScaleFactor = 0.7;
@@ -1438,7 +1567,7 @@ function embedJson(obj) {
     .replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
 }
 
-/** 학교·선생님·교시 설정 화면. school은 확인된 학교 정보(없으면 null). */
+/** 내 시간표 설정 화면(학교·선생님·교시). school은 확인된 학교 정보(없으면 null). */
 function buildSetupHtml(settings, school, notice, canCancel, prefs) {
   const embedded = { settings, school, canCancel: !!canCancel };
   const noticeHtml = notice
@@ -1451,8 +1580,7 @@ function buildSetupHtml(settings, school, notice, canCancel, prefs) {
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>설정</title>
 <style>${themeCss()}
-  h1{ font-size:20px; margin:0 0 4px; }
-  .lead{ font-size:12.5px; color:var(--sub); margin:0 0 16px; line-height:1.5; }
+  h1{ font-size:20px; margin:0 0 16px; }
   .notice{ font-size:12.5px; line-height:1.5; color:var(--warn); background:var(--warn-bg); border-radius:9px; padding:10px 12px; margin-bottom:16px; }
   .group{ margin-bottom:20px; }
   .label{ font-size:12px; font-weight:700; color:var(--accent); margin-bottom:6px; }
@@ -1483,22 +1611,28 @@ function buildSetupHtml(settings, school, notice, canCancel, prefs) {
   .time-row .tilde{ color:var(--sub); }
   .save-msg{ font-size:13px; margin-top:10px; text-align:center; line-height:1.5; }
   .save-msg.err{ color:var(--err); }
+  .results{ display:flex; flex-direction:column; gap:6px; margin-top:8px; }
+  .result{
+    display:flex; justify-content:space-between; align-items:center; gap:8px; width:100%; text-align:left;
+    font-family:inherit; font-size:14px; color:var(--text); background:var(--card); border:none; border-radius:9px;
+    padding:11px 12px; cursor:pointer;
+  }
+  .result .region{ font-size:12px; color:var(--sub); flex:none; }
 </style>
 </head>
 <body>
   ${canCancel ? '<button class="settings-back" id="cancel-btn">‹ 시간표로</button>' : ''}
-  <h1>학교·선생님 설정</h1>
-  <p class="lead">한 번 저장하면 같은 iCloud를 쓰는 아이폰·아이패드에서 함께 쓰여요.</p>
+  <h1>내 시간표 설정</h1>
   ${noticeHtml}
 
   <div class="group">
-    <div class="label">학교 코드</div>
+    <div class="label">우리 학교 찾기</div>
     <div class="row">
-      <input id="school-code" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="예: 12345" autocomplete="off">
-      <button class="btn" id="lookup-btn">확인</button>
+      <input id="school-input" maxlength="20" placeholder="학교 이름 또는 코드" autocomplete="off" enterkeyhint="search">
+      <button class="btn" id="find-btn">찾기</button>
     </div>
-    <div class="status" id="school-status">학교 코드를 넣고 "확인"을 눌러주세요.</div>
-    <div class="help">컴시간알리미 앱이나 컴시간교사.kr에서 학교를 검색하면 나오는 숫자예요.</div>
+    <div class="status" id="school-status">학교 이름 일부를 넣고 "찾기"를 눌러주세요.</div>
+    <div class="results" id="search-results"></div>
   </div>
 
   <div id="school-dependent">
@@ -1530,7 +1664,6 @@ function buildSetupHtml(settings, school, notice, canCancel, prefs) {
     <div class="group">
       <div class="label">담임 반 (선택)</div>
       <select id="homeroom"></select>
-      <div class="help">반별 시간표에서 처음 보여줄 반이에요.</div>
     </div>
 
     <div class="group">
@@ -1552,10 +1685,11 @@ function buildSetupHtml(settings, school, notice, canCancel, prefs) {
   var S = E.settings;
   var SCHOOL = E.school;
   function $(id){ return document.getElementById(id); }
-  var codeInput = $('school-code'), statusEl = $('school-status'), lookupBtn = $('lookup-btn');
+  var schoolInput = $('school-input'), findBtn = $('find-btn'), statusEl = $('school-status'), resultsBox = $('search-results');
   var teacherSel = $('teacher'), homeroomSel = $('homeroom'), lunchSel = $('lunch');
   var timesBox = $('times'), saveBtn = $('save-btn'), saveMsg = $('save-msg');
   var schoolNameInput = $('school-name-override'), teacherNameInput = $('teacher-name-override');
+  var PICKED = (S.schoolCode && S.schoolNameOverride) ? { code: S.schoolCode, name: S.schoolNameOverride } : null;
 
   function setStatus(text, kind){ statusEl.textContent = text; statusEl.className = 'status' + (kind ? ' ' + kind : ''); }
   function setSaveMsg(text, isErr){ saveMsg.textContent = text; saveMsg.className = 'save-msg' + (isErr ? ' err' : ''); }
@@ -1611,7 +1745,13 @@ function buildSetupHtml(settings, school, notice, canCancel, prefs) {
       $('starts-btn').hidden = true;
       return;
     }
-    setStatus((SCHOOL.region ? SCHOOL.region + ' ' : '') + SCHOOL.name + ' — 이 학교가 맞나요?', 'ok');
+    var tail = ' · 코드 ' + SCHOOL.code + ' · 선생님 ' + SCHOOL.teachers.length + '명';
+    if (PICKED && PICKED.code === SCHOOL.code) {
+      setStatus('✓ ' + PICKED.name + (SCHOOL.region ? ' (' + SCHOOL.region + ')' : '') + tail, 'ok');
+    } else {
+      setStatus('✓ ' + (SCHOOL.region ? SCHOOL.region + ' 지역 학교' : '학교') + tail +
+        ' — 선생님 목록에 내 이름이 있는지 보고, 아래 "화면에 보일 이름"에 학교 이름을 적어주세요.', 'ok');
+    }
     var known = SCHOOL.teachers.some(function(t){ return t[0] === S.teacherId; });
     teacherSel.appendChild(option('', '선생님을 골라주세요', !known));
     SCHOOL.teachers.forEach(function(t){
@@ -1626,33 +1766,75 @@ function buildSetupHtml(settings, school, notice, canCancel, prefs) {
       }
       homeroomSel.appendChild(og);
     });
-    schoolNameInput.placeholder = '학교 이름 (컴시간: ' + SCHOOL.name + ')';
+    schoolNameInput.placeholder = '학교 이름 (예: ○○중학교)';
     $('starts-btn').hidden = !SCHOOL.starts.some(Boolean);
     updateTeacherPlaceholder();
   }
 
-  codeInput.value = S.schoolCode;
+  schoolInput.value = (PICKED && PICKED.name) || S.schoolCode;
   schoolNameInput.value = S.schoolNameOverride;
   teacherNameInput.value = S.teacherNameOverride;
   renderPeriodPills(); renderTimes(); renderLunch(); renderSchool();
 
   teacherSel.addEventListener('change', updateTeacherPlaceholder);
-  codeInput.addEventListener('input', function(){
-    var code = codeInput.value.replace(/\\D/g, '');
-    if (SCHOOL && code !== SCHOOL.code) { SCHOOL = null; renderSchool(); setStatus('"확인"을 눌러 학교를 확인해주세요.'); }
-  });
-  lookupBtn.addEventListener('click', function(){
-    var code = codeInput.value.replace(/\\D/g, '');
-    codeInput.value = code;
-    if (!code) { setStatus('학교 코드를 입력해주세요.', 'err'); return; }
-    lookupBtn.disabled = true;
-    setStatus('확인 중…');
+
+  // 입력칸 하나: 숫자만 있으면 학교 코드로 확인, 아니면 학교 이름으로 검색
+  function lookupCode(code){
+    SCHOOL = null; renderSchool();
+    findBtn.disabled = true;
+    setStatus('학교를 확인하는 중…');
     location.href = 'comcigan-setup://school?code=' + code;
-  });
+  }
+  function runFind(){
+    var q = schoolInput.value.replace(/\\s+/g, ' ').trim();
+    if (!q) { setStatus('학교 이름이나 코드를 넣어주세요.', 'err'); return; }
+    schoolInput.blur();
+    resultsBox.innerHTML = '';
+    if (/^\\d{1,8}$/.test(q)) {
+      if (PICKED && PICKED.code !== q) PICKED = null;
+      lookupCode(q);
+      return;
+    }
+    findBtn.disabled = true;
+    setStatus('찾는 중…');
+    window.__SEARCH_Q__ = q;
+    location.href = 'comcigan-setup://search';
+  }
+  findBtn.addEventListener('click', runFind);
+  schoolInput.addEventListener('keydown', function(e){ if (e.key === 'Enter') { e.preventDefault(); runFind(); } });
+  function pickSchool(sc){
+    PICKED = { code: sc.code, name: sc.name };
+    schoolInput.value = sc.name;
+    resultsBox.innerHTML = '';
+    lookupCode(sc.code);
+  }
+  window.__searchResult = function(res){
+    findBtn.disabled = false;
+    resultsBox.innerHTML = '';
+    if (!res || !res.ok) { setStatus((res && res.message) || '찾지 못했어요.', 'err'); return; }
+    if (!res.schools.length) { setStatus('찾은 학교가 없어요. 이름 일부만 넣어 다시 찾아보세요.', 'err'); return; }
+    setStatus(res.schools.length >= 30 ? '30곳까지 보여요. 더 자세히 넣으면 좁혀져요.' : '우리 학교를 눌러주세요.');
+    res.schools.forEach(function(sc){
+      var b = document.createElement('button');
+      b.className = 'result'; b.type = 'button';
+      var n = document.createElement('span'); n.textContent = sc.name;
+      var r = document.createElement('span'); r.className = 'region'; r.textContent = sc.region;
+      b.appendChild(n); b.appendChild(r);
+      b.addEventListener('click', function(){ pickSchool(sc); });
+      resultsBox.appendChild(b);
+    });
+  };
+
   window.__schoolResult = function(res){
-    lookupBtn.disabled = false;
-    if (res && res.ok) { SCHOOL = res.school; renderSchool(); }
-    else { SCHOOL = null; renderSchool(); setStatus((res && res.message) || '학교를 확인하지 못했어요.', 'err'); }
+    findBtn.disabled = false;
+    if (res && res.ok) {
+      SCHOOL = res.school;
+      if (PICKED && PICKED.code === SCHOOL.code) schoolNameInput.value = PICKED.name;
+      else if (SCHOOL.code !== S.schoolCode) schoolNameInput.value = '';
+      renderSchool();
+    } else {
+      SCHOOL = null; renderSchool(); setStatus((res && res.message) || '학교를 확인하지 못했어요.', 'err');
+    }
   };
 
   Array.prototype.forEach.call(document.querySelectorAll('#period-pills .pill'), function(b){
@@ -1678,7 +1860,7 @@ function buildSetupHtml(settings, school, notice, canCancel, prefs) {
   saveBtn.addEventListener('click', function(){
     readTimes();
     window.__SETUP_DATA__ = {
-      schoolCode: codeInput.value.replace(/\\D/g, ''),
+      schoolCode: SCHOOL ? SCHOOL.code : '',
       teacherId: Number(teacherSel.value) || 0,
       maxPeriod: S.maxPeriod,
       homeroomClass: homeroomSel.value || '',
@@ -1706,8 +1888,7 @@ function buildSetupHtml(settings, school, notice, canCancel, prefs) {
 
 function buildAppHtml(data, teacherId, prefs, meta) {
   const maxPeriod = (CONFIG.MAX_PERIOD === 7) ? 7 : 6;
-  const schoolOverride = String(CONFIG.SCHOOL_NAME_OVERRIDE || '').trim();
-  const schoolLine = escapeHtml(schoolOverride || `${data['지역명'] || ''} ${data['학교명'] || ''}`.trim());
+  const schoolLine = escapeHtml(displaySchoolName(data));
   const teacherNm = escapeHtml(displayTeacherName(data, teacherId));
   const updatedServer = escapeHtml(formatServerUpdated(data['자료244']));
   const updatedFetched = escapeHtml(formatTime(meta.fetchedAt));
@@ -1838,7 +2019,7 @@ ${UPDATE_CSS}
       <input type="checkbox" id="highlight-changed-checkbox">
       변경 시간표 색칠하기
     </label>
-    <div class="updated${offline ? ' warn' : ''}" id="updated-line"><button class="err-badge" id="err-badge"${showErr ? '' : ' hidden'}>오류 ›</button><span id="updated-text">${offline ? '⚠ 오프라인 · ' : ''}시간표 수정 ${updatedServer} · 새로고침 ${updatedFetched}</span></div>
+    <div class="updated${offline ? ' warn' : ''}" id="updated-line"><button class="err-badge${report && !showErr ? ' offline' : ''}" id="err-badge"${report ? '' : ' hidden'}>${report && !showErr ? '⚠ 오프라인 ›' : '오류 ›'}</button><span id="updated-text">시간표 수정 ${updatedServer} · 새로고침 ${updatedFetched}</span></div>
     ${updateBannerHtml(meta.update)}
 
     <div class="section-label-row">
@@ -1871,7 +2052,7 @@ ${UPDATE_CSS}
   <div id="tab-settings" hidden>
     <button class="settings-back" id="back-btn">‹ 시간표로</button>
     <div class="settings-group">
-      <div class="settings-label">학교·선생님·교시</div>
+      <div class="settings-label">내 시간표 설정</div>
       <div class="setup-summary">${setupSummary}</div>
       <button class="pill" id="open-setup-btn">바꾸기</button>
     </div>
@@ -1913,7 +2094,7 @@ ${UPDATE_CSS}
 
   <div id="tab-error" hidden>
     <button class="settings-back" id="err-back-btn">‹ 시간표로</button>
-    <div id="err-panel">${showErr ? errorPanelHtml(report) : ''}</div>
+    <div id="err-panel">${report ? errorPanelHtml(report) : ''}</div>
   </div>
 
 <script>
@@ -2138,8 +2319,10 @@ ${UPDATE_CSS}
     renderSection('class');
     var report = payload && payload.report;
     var showErr = !!(report && report.code !== 'offline');
-    if (showErr) {
+    if (report) {
       document.getElementById('err-panel').innerHTML = report.html;
+      errBadge.textContent = showErr ? '오류 ›' : '⚠ 오프라인 ›';
+      errBadge.classList.toggle('offline', !showErr);
       errBadge.hidden = false;
     } else if (anyOk) {
       errBadge.hidden = true;
@@ -2147,7 +2330,7 @@ ${UPDATE_CSS}
     var thisWeek = EMBEDDED.weeks[resolveR('this')];
     if (thisWeek) {
       var offline = !anyOk && !showErr;
-      updatedText.textContent = (offline ? '⚠ 오프라인 · ' : '') + '시간표 수정 ' + formatServerUpdated(thisWeek.updatedServer) +
+      updatedText.textContent = '시간표 수정 ' + formatServerUpdated(thisWeek.updatedServer) +
         ' · 새로고침 ' + (anyOk ? '방금' : '실패');
       updatedLine.classList.toggle('warn', offline);
     }
@@ -2330,11 +2513,10 @@ async function handleWeekRequest(webView, schoolCode, teacherId, rs, state) {
       if (!served) results[r] = { ok: false };
     }
   }
-  if (isShownAsError(report)) state.report = report;
-  else if (!report) state.report = null;
+  state.report = report;
   const payload = {
     results,
-    report: report ? { code: report.code, html: isShownAsError(report) ? errorPanelHtml(report) : '' } : null,
+    report: report ? { code: report.code, html: errorPanelHtml(report) } : null,
   };
   const js = `window.__applyWeekResult && window.__applyWeekResult(${JSON.stringify(payload)});`;
   try {
@@ -2472,7 +2654,7 @@ async function showAppPage(session) {
     report: week.error ? buildErrorReport(week.error) : null,
     update,
   };
-  session.state.report = isShownAsError(meta.report) ? meta.report : null;
+  session.state.report = meta.report;
   session.page = 'app';
   session.appReady = true;
   await session.webView.loadHTML(buildAppHtml(week.data, teacherId, session.prefs, meta));
@@ -2519,8 +2701,27 @@ async function handleSetupSave(session) {
   await showAppPage(session);
 }
 
+async function handleSchoolSearch(session) {
+  let q = '';
+  try {
+    q = JSON.parse(await evalInPage(session, 'JSON.stringify(window.__SEARCH_Q__ || "")')) || '';
+  } catch (e) {}
+  let res;
+  try {
+    res = { ok: true, schools: await searchSchools(typeof q === 'string' ? q : '') };
+  } catch (e) {
+    let message = errText(e);
+    if (e.code === 'offline') message = '인터넷에 연결되지 않았어요. 연결을 확인하고 다시 검색해주세요.';
+    else if (e.code === 'server') message = '컴시간 서버가 응답하지 않아요. 잠시 뒤 다시 검색해주세요.';
+    else if (e.code !== 'search-input') message = '지금은 학교 이름으로 찾을 수 없어요. 학교 코드를 알면 숫자로 넣어 찾아주세요.';
+    res = { ok: false, message };
+  }
+  await evalInPage(session, `window.__searchResult && window.__searchResult(${JSON.stringify(res)});`);
+}
+
 async function handleSetupRequest(session, url) {
   const action = url.slice('comcigan-setup://'.length).split('?')[0];
+  if (action === 'search') return handleSchoolSearch(session);
   if (action === 'school') return handleSchoolLookup(session, sanitizeSchoolCode(parseQuery(url).code).slice(0, 8));
   if (action === 'save') return handleSetupSave(session);
   if (action === 'open') return showSetupPage(session, null);
