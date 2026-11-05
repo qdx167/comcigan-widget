@@ -13,7 +13,7 @@ const HOST = 'http://comci.net:4082';
 const SC_PREFIX = '70909_';
 const DATA_PATH = '/662119_T';
 const ENDPOINT_FILE_NAME = 'endpoint.json';
-const SCRIPT_VERSION = '2026-11-05';
+const SCRIPT_VERSION = '2026-11-06';
 const UPDATE_INFO_URL = 'https://raw.githubusercontent.com/qdx167/comcigan-widget/main/update/version.json';
 const UPDATE_CHECK_FILE_NAME = 'update-check.json';
 const UPDATE_CHECK_INTERVAL_HOURS = 24;
@@ -28,6 +28,10 @@ const CACHE_DIR_NAME = 'comcigan-cache';
 const PREFS_FILE_NAME = 'prefs.json';
 const HEARTBEAT_FILE_NAME = 'widget-heartbeat.json';
 const HEARTBEAT_STALE_MINUTES = 5;
+// 컴시간 주소가 바뀌는 순간 서버가 잠깐 연결을 거부하는 경우 대비
+const SERVER_RETRY_DELAY_MS = 2000;
+const SERVER_QUIET_MINUTES = 60;
+const ERROR_REFRESH_MINUTES = 5;
 const WEEKDAY_KO = ['일', '월', '화', '수', '목', '금', '토'];
 
 const COLUMN_GAP = 4;
@@ -506,6 +510,27 @@ function classifyDataError(e, ep) {
   return appError('site-changed', e.message, `${e.detail || ''} [${where}]`);
 }
 
+function wait(ms) {
+  return new Promise((resolve) => {
+    try {
+      Timer.schedule(ms, false, resolve);
+    } catch (e) {
+      resolve();
+    }
+  });
+}
+
+/** 연결 실패(network)면 잠깐 쉬고 한 번 더. */
+async function fetchSchoolDataRetry(ep, schoolCode, r) {
+  try {
+    return await fetchSchoolDataWith(ep, schoolCode, r);
+  } catch (e) {
+    if (e.code !== 'network') throw e;
+    await wait(SERVER_RETRY_DELAY_MS);
+    return await fetchSchoolDataWith(ep, schoolCode, r);
+  }
+}
+
 async function fetchSchoolData(schoolCode, r) {
   const ep = loadEndpoint();
   let firstErr;
@@ -521,10 +546,18 @@ async function fetchSchoolData(schoolCode, r) {
     throw appError('site-changed', '컴시간 사이트에서 시간표 요청 주소를 찾지 못했습니다.',
       `${firstErr.message} ${firstErr.detail || ''} [${ep.prefix} ${ep.path}]`);
   }
-  if (found.prefix === ep.prefix && found.path === ep.path) throw classifyDataError(firstErr, ep);
+  if (found.prefix === ep.prefix && found.path === ep.path) {
+    if (firstErr.code !== 'network') throw classifyDataError(firstErr, ep);
+    try {
+      await wait(SERVER_RETRY_DELAY_MS);
+      return await fetchSchoolDataWith(ep, schoolCode, r);
+    } catch (e) {
+      throw classifyDataError(e, ep);
+    }
+  }
 
   try {
-    const data = await fetchSchoolDataWith(found, schoolCode, r);
+    const data = await fetchSchoolDataRetry(found, schoolCode, r);
     saveEndpoint(found);
     return data;
   } catch (e) {
@@ -1485,7 +1518,14 @@ function buildWidget(data, teacherId, prefs, meta) {
     const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5);
     w.refreshAfterDate = nextMidnight;
   }
+  if (meta.retrySoon) requestRefreshSoon(w);
   return w;
+}
+
+/** 서버 오류였으면 다음 교시를 기다리지 않고 몇 분 뒤 다시 그려달라고 요청(시각은 iOS가 정함). */
+function requestRefreshSoon(w) {
+  const soon = new Date(Date.now() + ERROR_REFRESH_MINUTES * 60 * 1000);
+  if (!w.refreshAfterDate || w.refreshAfterDate > soon) w.refreshAfterDate = soon;
 }
 
 // ===== 확대 화면 (WebView) — HTML 생성 =====
@@ -2788,6 +2828,7 @@ async function runSilentRefresh(schoolCode) {
 function errorWidget(report, prefs) {
   const c = buildColors(prefs.widgetAppearance, prefs.accent, prefs.dividerStyle);
   const w = new ListWidget();
+  if (report.code === 'server') requestRefreshSoon(w);
   w.backgroundColor = c.bg;
   w.setPadding(16, 16, 16, 16);
   w.addSpacer();
@@ -2853,7 +2894,14 @@ async function run() {
     const teacherId = currentTeacherId();
     const { data, fetchedAt, fromCache, error } = await getWeekData(schoolCode, '1');
     if (!isValidTeacher(data, teacherId)) throw teacherError(teacherId);
-    const meta = { fetchedAt, fromCache, report: error ? buildErrorReport(error) : null };
+    let meta = { fetchedAt, fromCache, report: error ? buildErrorReport(error) : null };
+    if (error && error.code === 'server') {
+      meta.retrySoon = true;
+      // 받아둔 시간표가 최근 것이면 잠깐의 서버 오류는 배지 없이 평소 모양으로(새로고침 시각은 멈춰 있음)
+      if (Date.now() - fetchedAt < SERVER_QUIET_MINUTES * 60 * 1000) {
+        meta = { fetchedAt, fromCache: false, report: null, retrySoon: true };
+      }
+    }
     Script.setWidget(buildWidget(data, teacherId, prefs, meta));
     writeHeartbeat();
   } catch (e) {
